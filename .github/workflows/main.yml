@@ -1,0 +1,195 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Swift
+      uses: swift-actions/setup-swift@v1
+      with:
+        swift-version: "5.7"
+
+    - name: Build Swift components
+      run: |
+        swift build -c release --product SubtitleOCR
+        mkdir -p artifacts/macos
+        cp -R .build/release/* artifacts/macos/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: macos-binaries
+        path: artifacts/macos
+
+  build-linux:
+    runs-on: ubuntu-latest
+    env:
+      RUST_TARGET: x86_64-unknown-linux-gnu
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: stable
+        target: ${{ env.RUST_TARGET }}
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build Rust backend
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release --target ${{ env.RUST_TARGET }}
+
+    - name: Build TypeScript UI
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+        cache: 'npm'
+    - run: |
+        npm ci
+        npm run build
+      working-directory: ./frontend
+
+    - name: Package artifacts
+      run: |
+        mkdir -p artifacts/linux
+        cp target/$RUST_TARGET/release/subtitle-ocr artifacts/linux/
+        cp -R frontend/dist/* artifacts/linux/
+        tar czvf linux-build.tar.gz artifacts/linux
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: linux-package
+        path: linux-build.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    env:
+      RUST_TARGET: x86_64-pc-windows-msvc
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: stable
+        target: ${{ env.RUST_TARGET }}
+
+    - name: Cache Rust dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~\.cargo\registry
+          ~\.cargo\git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build Rust backend
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --release --target ${{ env.RUST_TARGET }}
+
+    - name: Build TypeScript UI
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+        cache: 'npm'
+    - run: |
+        npm ci
+        npm run build
+      working-directory: ./frontend
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.8'
+        architecture: 'x64'
+
+    - name: Cache Python dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~\AppData\Local\pip\Cache
+          venv
+        key: ${{ runner.os }}-python-${{ hashFiles('**/requirements.txt') }}
+
+    - name: Install PaddleOCR
+      run: |
+        python -m venv venv
+        venv\Scripts\activate
+        python -m pip install --upgrade pip
+        pip install paddlepaddle==2.5.2 paddleocr==2.7.0.3 onnxruntime==1.15.1
+        python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='en', use_angle_cls=True)"
+        python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='ch', use_angle_cls=True)"
+        deactivate
+
+    - name: Package Windows artifacts
+      run: |
+        mkdir artifacts\windows
+        copy target\${{ env.RUST_TARGET }}\release\subtitle-ocr.exe artifacts\windows
+        xcopy /E /Y frontend\dist\* artifacts\windows
+        xcopy /E /Y venv\Lib\site-packages artifacts\windows\paddle_deps
+        xcopy /E /Y engines\ocr\paddle artifacts\windows\ocr_engine
+        
+        # 创建启动脚本
+        @echo off
+        echo @echo off > artifacts\windows\run.bat
+        echo set PYTHONPATH=%~dp0paddle_deps;%~dp0ocr_engine >> artifacts\windows\run.bat
+        echo subtitle-ocr.exe %%* >> artifacts\windows\run.bat
+        
+        # 压缩打包
+        7z a windows-build.zip .\artifacts\windows\*
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: windows-package
+        path: windows-build.zip
+
+  create-release:
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: artifacts
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref }}
+        name: Release ${{ github.ref_name }}
+        body: Automated build from GitHub Actions
+        files: |
+          artifacts/macos-binaries/SubtitleOCR
+          artifacts/linux-package/linux-build.tar.gz
+          artifacts/windows-package/windows-build.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
