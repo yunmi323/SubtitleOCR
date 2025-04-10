@@ -25,7 +25,7 @@ jobs:
         cp -R .build/release/* artifacts/macos/
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: macos-binaries
         path: artifacts/macos
@@ -78,7 +78,7 @@ jobs:
         tar czvf linux-build.tar.gz artifacts/linux
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: linux-package
         path: linux-build.tar.gz
@@ -167,7 +167,7 @@ jobs:
         7z a windows-build.zip .\artifacts\windows\*
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-package
         path: windows-build.zip
